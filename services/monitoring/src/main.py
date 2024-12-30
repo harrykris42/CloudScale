@@ -1,9 +1,13 @@
 # services/monitoring/src/main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import uvicorn
 import logging
+import asyncio
+
+from .config import settings
+from .api.v1.endpoints import metrics
+from .core.metrics_collector import MetricsCollector
 
 # Configure logging
 logging.basicConfig(
@@ -12,47 +16,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global metrics collector instance
+metrics_collector: MetricsCollector | None = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting up monitoring service...")
+
+    # Initialize metrics collector
+    global metrics_collector
+    metrics_collector = MetricsCollector()
+    collection_task = asyncio.create_task(metrics_collector.start_collection())
+
     yield
+
     # Shutdown
     logger.info("Shutting down monitoring service...")
+    if metrics_collector:
+        await metrics_collector.stop_collection()
+    if collection_task:
+        collection_task.cancel()
+        try:
+            await collection_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(
-    title="CloudScale Monitoring Service",
+    title=settings.PROJECT_NAME,
     description="Resource monitoring and metrics collection service",
-    version="1.0.0",
+    version=settings.VERSION,
     lifespan=lifespan
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["http://localhost:3000"],  # Next.js frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(metrics.router, prefix=settings.API_V1_STR + "/monitoring", tags=["monitoring"])
+
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
-
-@app.get("/metrics")
-async def get_metrics():
-    try:
-        # Placeholder for actual metrics collection
-        return {
-            "cpu_usage": 0.0,
-            "memory_usage": 0.0,
-            "disk_usage": 0.0,
-            "network_throughput": 0.0
-        }
-    except Exception as e:
-        logger.error(f"Error collecting metrics: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error collecting metrics")
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    return {
+        "status": "healthy",
+        "version": settings.VERSION,
+        "collecting_metrics": metrics_collector is not None and metrics_collector.is_running
+    }
