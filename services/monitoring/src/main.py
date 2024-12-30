@@ -1,12 +1,15 @@
 # services/monitoring/src/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from .api.v1.endpoints import metrics, auth
+from .core.metrics_collector import MetricsCollector
 from contextlib import asynccontextmanager
 import logging
 import asyncio
 
 from .config import settings
-from .api.v1.endpoints import metrics
+from .api.v1.endpoints import metrics, auth
+from .database import get_db
 from .core.metrics_collector import MetricsCollector
 
 # Configure logging
@@ -43,23 +46,28 @@ async def lifespan(app: FastAPI):
             pass
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
+    title="CloudScale Monitoring",
     description="Resource monitoring and metrics collection service",
-    version=settings.VERSION,
-    lifespan=lifespan
+    version="1.0.0",
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js frontend URL
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers
-app.include_router(metrics.router, prefix=settings.API_V1_STR + "/monitoring", tags=["monitoring"])
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
+app.include_router(
+    metrics.router,
+    prefix="/api/v1/monitoring",
+    tags=["monitoring"],
+    dependencies=[Depends(get_current_active_user)]  # Require authentication for all metrics endpoints
+)
 
 @app.get("/health")
 async def health_check():
@@ -68,3 +76,23 @@ async def health_check():
         "version": settings.VERSION,
         "collecting_metrics": metrics_collector is not None and metrics_collector.is_running
     }
+
+@app.on_event("startup")
+async def startup_event():
+    # Create initial admin user if not exists
+    try:
+        async for db in get_db():
+            stmt = select(User).where(User.username == "admin")
+            result = await db.execute(stmt)
+            if not result.scalar_one_or_none():
+                admin_user = User(
+                    username="admin",
+                    email="admin@cloudscale.local",
+                    hashed_password=get_password_hash("admin123"),
+                    is_admin=True
+                )
+                db.add(admin_user)
+                await db.commit()
+                logging.info("Created initial admin user")
+    except Exception as e:
+        logging.error(f"Error creating admin user: {e}")

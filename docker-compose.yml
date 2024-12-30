@@ -1,57 +1,53 @@
 version: '3.8'
 
 services:
-  monitoring:
-    build: 
+  db:
+    image: timescale/timescaledb:latest-pg14
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=cloudscale
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
       context: ./services/monitoring
       dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloudscale
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-secret-key-here
+      - ENVIRONMENT=development
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloudscale
-      - REDIS_URL=redis://redis:6379/0
-      - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
-      - db
-      - redis
-      - rabbitmq
-
-  analytics:
-    build:
-      context: ./services/analytics
-      dockerfile: Dockerfile
-    ports:
-      - "8001:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloudscale
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - db
-      - redis
-
-  alerting:
-    build:
-      context: ./services/alerting
-      dockerfile: Dockerfile
-    ports:
-      - "8002:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloudscale
-      - RABBITMQ_URL=amqp://rabbitmq:5672
-    depends_on:
-      - db
-      - rabbitmq
-
-  cost-management:
-    build:
-      context: ./services/cost-management
-      dockerfile: Dockerfile
-    ports:
-      - "8003:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloudscale
-    depends_on:
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/monitoring:/app
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
     build:
@@ -60,43 +56,14 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - API_URL=http://gateway:8080
-    depends_on:
-      - gateway
-
-  gateway:
-    image: nginx:alpine
-    ports:
-      - "8080:80"
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     volumes:
-      - ./infrastructure/nginx:/etc/nginx/conf.d
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
     depends_on:
-      - monitoring
-      - analytics
-      - alerting
-      - cost-management
-
-  db:
-    image: timescale/timescaledb:latest-pg14
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=cloudscale
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-
-  rabbitmq:
-    image: rabbitmq:3-management
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+      - backend
 
 volumes:
   postgres_data:
+  redis_data:

@@ -1,9 +1,13 @@
+// src/app/page.tsx
 import { Dashboard } from "@/components/metrics/Dashboard";
+import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-background">
-      <Dashboard />
-    </main>
+    <ProtectedRoute>
+      <main className="min-h-screen bg-background">
+        <Dashboard />
+      </main>
+    </ProtectedRoute>
   );
 }
